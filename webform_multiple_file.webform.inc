@@ -271,7 +271,7 @@ function _webform_render_multiple_file($component, $value = NULL, $filter = TRUE
     // Extra functionality for the group of elements.
     $elements['#file_upload_delta'] = $delta;
     $elements['#theme'] = 'file_widget_multiple';
-    $elements['#theme_wrappers'] = array('fieldset');
+    $elements['#theme_wrappers'] = array(isset($component['extra']['wrapper']) ? $component['extra']['wrapper'] : 'fieldset', 'webform_element');
     $elements['#process'] = array('file_field_widget_process_multiple');
     $elements['#title'] = $element['#title'];
     $elements['#title_display'] = 'invisible';
@@ -286,7 +286,30 @@ function _webform_render_multiple_file($component, $value = NULL, $filter = TRUE
     $elements['#file_upload_description'] = theme('file_upload_help', array('description' => '', 'upload_validators' => $elements[0]['#upload_validators']));
   }
 
+  $elements['#required'] = $component['required'];
+  $elements['#element_validate'] = array('webform_multiple_file_validate');
+
   return $elements;
+}
+
+/**
+ * Validates the multiple file submission on the component level.
+ */
+function webform_multiple_file_validate($elements, $form_state, $form) {
+  if ($elements['#required']) {
+    $key_exists = FALSE;
+    $values = drupal_array_get_nested_value(
+      $form_state['values'],
+      $elements['#array_parents'],
+      $key_exists
+    );
+    if ($key_exists && count(array_filter($values)) == 0) {
+      form_error(
+        $elements,
+        t('@name field is required.', ['@name' => $elements['#title']])
+      );
+    }
+  }
 }
 
 /**
@@ -513,15 +536,62 @@ function webform_multiple_file_process_element($element, &$form_state, $form) {
     unset($element['#prefix'], $element['#suffix']);
   }
 
+  // Webform conditionals requires access to values from dependencies. Collect
+  // dependencies and add their form parents to #limit_validation_errors.
+  $node = node_load($element['#webform_component']['nid']);
+  $dependency_parents = webform_multiple_file_get_same_page_dependencies($node, $element['#webform_component']);
+
   // Add another submit handler to the upload and remove buttons,
   // to implement functionality needed by the webform component.
   foreach (array('upload_button', 'remove_button') as $key) {
     $element[$key]['#submit'][] = 'webform_multiple_file_managed_file_submit';
     $limit_validation_errors = array(array_slice($element['#parents'], 0, -1));
+    if ($dependency_parents) {
+      $limit_validation_errors = array_merge($limit_validation_errors, $dependency_parents);
+    }
     $element[$key]['#limit_validation_errors'] = $limit_validation_errors;
   }
 
+  // Override the default element validator to add support for previous button.
+  $element['#element_validate'] = ['webform_multiple_file_managed_file_validate'];
+
   return $element;
+}
+
+/**
+ * An #element_validate callback for the webform specific managed_file element.
+ *
+ * Copied from file_managed_file_validate() to support the previous button.
+ */
+function webform_multiple_file_managed_file_validate(&$element, &$form_state) {
+  // If referencing an existing file, only allow if there are existing
+  // references. This prevents unmanaged files from being deleted if this
+  // item were to be deleted.
+  $clicked_button = end($form_state['triggering_element']['#parents']);
+  if ($clicked_button != 'remove_button' && !empty($element['fid']['#value'])) {
+    if ($file = file_load($element['fid']['#value'])) {
+      if ($file->status == FILE_STATUS_PERMANENT) {
+        $references = file_usage_list($file);
+        if (empty($references)) {
+          form_error($element, t('The file used in the !name field may not be referenced.', array('!name' => $element['#title'])));
+        }
+      }
+    }
+    else {
+      form_error($element, t('The file referenced by the !name field does not exist.', array('!name' => $element['#title'])));
+    }
+  }
+
+  $validate_button = !in_array($clicked_button, array(
+    'previous',
+    'upload_button',
+    'remove_button',
+  ));
+
+  // Consolidate the array value of this field to a single FID.
+  if (!$element['#extended']) {
+    form_set_value($element, $element['fid']['#value'], $form_state);
+  }
 }
 
 /**

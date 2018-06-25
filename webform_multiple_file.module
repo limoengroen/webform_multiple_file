@@ -83,3 +83,72 @@ function webform_multiple_file_webform_submission_presave($node, &$submission) {
     );
   }
 }
+
+/**
+ * Finds same page dependencies for the component.
+ *
+ * @param object $node
+ *   Webform node.
+ * @param array $component
+ *   A multiple_file component to collect dependencies for.
+ *
+ * @return array
+ *   An array of parents for all dependencies.
+ */
+function webform_multiple_file_get_same_page_dependencies($node, $component) {
+  $conditionals = webform_get_conditional_sorter($node);
+  $order = $conditionals->getOrder();
+  $rules = array();
+
+  // Map rules based on rgid for easy access.
+  foreach ($node->webform['conditionals'] as $rule_group) {
+    $rules[$rule_group['rgid']] = $rule_group;
+  }
+
+  $dependency_parents = array();
+  $dependencies = array();
+  $frontier = array($component['cid']);
+
+  do {
+    $new_frontier = array();
+    foreach ($order[$component['page_num']] as $item) {
+      // If the component is a rule target, collect dependencies from the
+      // corresponding rule group.
+      if (in_array($item['cid'], $frontier)) {
+        $new_frontier = array_merge($new_frontier, webform_multiple_file_collect_sources($rules[$item['rgid']]));
+      }
+    }
+    $frontier = array_unique($new_frontier);
+    $dependencies = array_merge($dependencies, $frontier);
+    // Collect dependencies of dependencies until exhausted.
+  } while (!empty($frontier));
+
+  if ($dependencies) {
+    foreach ($dependencies as $dependency) {
+      $component = $node->webform['components'][$dependency];
+      $dependency_parents[] = array_merge(array('submitted'), webform_component_parent_keys($node, $component));
+    }
+
+  }
+
+  return $dependency_parents;
+}
+
+/**
+ * Collect sources from a conditional rule group.
+ *
+ * @param array $rule_group
+ *   A webform conditional rule group.
+ *
+ * @return array
+ *   An array of component ids.
+ */
+function webform_multiple_file_collect_sources($rule_group) {
+  $cids = [];
+  foreach ($rule_group['rules'] as $rule) {
+    if (isset($rule['source'])) {
+      $cids[] = $rule['source'];
+    }
+  }
+  return $cids;
+}
